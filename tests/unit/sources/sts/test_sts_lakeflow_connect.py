@@ -176,3 +176,75 @@ class TestStsLakeflowConnect(LakeflowConnectTests):
             "team_id": str(fixture["home_team_id"]),
             "match_id": str(fixture["match_id"]),
         }
+
+
+def test_players_can_expand_from_competition_and_season_scope():
+    connector = StsLakeflowConnect(json.loads(CONFIG_PATH.read_text()))
+
+    records, _ = connector.read_table(
+        "players",
+        {},
+        {
+            "competition_id": PRIMARY_COMPETITION_ID,
+            "season_id": PRIMARY_SEASON_ID,
+        },
+    )
+    rows = list(records)
+
+    assert rows
+    assert len({row["club_id"] for row in rows if row.get("club_id")}) > 1
+
+
+def test_match_information_can_expand_from_competition_and_season_scope():
+    connector = StsLakeflowConnect(json.loads(CONFIG_PATH.read_text()))
+
+    records, _ = connector.read_table(
+        "match_information",
+        {},
+        {
+            "competition_id": PRIMARY_COMPETITION_ID,
+            "season_id": PRIMARY_SEASON_ID,
+        },
+    )
+    rows = list(records)
+
+    assert rows
+    assert len({row["match_id"] for row in rows if row.get("match_id")}) > 1
+
+
+def test_rankings_match_player_team_goal_can_expand_from_competition_and_season_scope():
+    connector = StsLakeflowConnect(json.loads(CONFIG_PATH.read_text()))
+
+    records, _ = connector.read_table(
+        "rankings_match_player_team_goal",
+        {},
+        {
+            "competition_id": PRIMARY_COMPETITION_ID,
+            "season_id": PRIMARY_SEASON_ID,
+            "max_records_per_batch": "1",
+        },
+    )
+    rows = list(records)
+
+    assert rows
+    assert rows[0]["match_id"]
+    assert rows[0]["team_id"]
+
+
+def test_rankings_matchday_team_goal_can_expand_from_competition_and_season_scope():
+    connector = StsLakeflowConnect(json.loads(CONFIG_PATH.read_text()))
+
+    records, _ = connector.read_table(
+        "rankings_matchday_team_goal",
+        {},
+        {
+            "competition_id": PRIMARY_COMPETITION_ID,
+            "season_id": PRIMARY_SEASON_ID,
+            "max_records_per_batch": "1",
+        },
+    )
+    rows = list(records)
+
+    assert rows
+    assert rows[0]["matchday_id"]
+    assert rows[0]["ranking_type"]

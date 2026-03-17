@@ -1,0 +1,155 @@
+connection_name: sts_connection
+objects:
+  - table:
+      source_table: match_information
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: eventdata_match_basic
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: eventdata_match_basic_extended
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: eventdata_match_statistics_match
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: eventdata_match_statistics_intervals
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: eventdata_match_statistics_periods
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: advanced_events_raw
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: advanced_event_plays
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: advanced_event_receptions
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: advanced_event_carries
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: advanced_event_team_possessions
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: advanced_event_other_ball_actions
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: advanced_event_tackling_games
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: advanced_event_fouls
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: advanced_event_shots_at_goal
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: event_raw_messages
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_play_events
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_foul_events
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_shot_at_goal_events
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_substitution_events
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_caution_events
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_offside_events
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_corner_kick_events
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_free_kick_events
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_delete_events
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: event_raw_var_notifications
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: tracking_pitch_metadata
+      table_configuration:
+        match_id: MLS-MAT-000532
+  - table:
+      source_table: tracking_postmatch_framesets
+      table_configuration:
+        match_id: MLS-MAT-000532
+        max_records_per_batch: "500"
+  - table:
+      source_table: distance_match_teams
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: distance_match_players
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: speed_interval_definitions
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: speed_interval_player_stats
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: positional_match_team_statistics
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: positional_match_player_statistics
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: player_topspeed_alerts
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: player_topspeed_alert_rankings
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: attacking_zone_entries
+      table_configuration:
+        match_id: MLS-MAT-00067J
+  - table:
+      source_table: win_probability_by_minute
+      table_configuration:
+        match_id: MLS-MAT-00067J

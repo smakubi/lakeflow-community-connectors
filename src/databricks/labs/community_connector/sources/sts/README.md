@@ -55,6 +55,21 @@ A Unity Catalog connection for this connector can be created in two ways via the
 
 The connection can also be created using the standard Unity Catalog API.
 
+### Configure From a Databricks-Hosted Git Repo
+
+If you publish this repository to a Databricks Git folder or use it as the source for a custom Community Connector, the simplest user workflow is:
+
+1. Add the `sts` connector from the repo through **Add Data** > **Community connectors** > **Add Community Connector**.
+2. Create the STS Unity Catalog connection using the `connector_spec.yaml` form for this connector.
+3. Start from one of the checked-in pipeline specs under `pipeline-spec/sts/` instead of writing a spec from scratch.
+4. Update only the `connection_name` and the STS identifiers in each table's `table_configuration`.
+
+Recommended checked-in starter specs:
+
+- `pipeline-spec/sts/base_metadata.yaml` - low-risk base and reference tables.
+- `pipeline-spec/sts/match_analytics.yaml` - match-scoped analytics and event tables using known-good sample match IDs.
+- `pipeline-spec/sts/recommended_default_mls.yaml` - a conservative MLS example that excludes currently empty table families for the development tenant.
+
 ## Supported Objects
 
 All STS tables in the current implementation are read as `snapshot` tables. The connector does not expose an incremental cursor field for any table, and delete synchronization is not implemented as a separate Lakeflow CDC mode. Each read returns the current payload for the requested STS feed and parameter set.
@@ -232,16 +247,18 @@ The connector validates table options strictly. Only the parameter combinations 
 | `seasons` | `competition_id` |
 | `season_tables` | `competition_id` |
 | `clubs` | `competition_id`, `season_id` |
-| `players`, `team_officials` | `club_id`, `season_id` |
+| `players`, `team_officials` | either `club_id`, `season_id`; or `competition_id`, `season_id` to ingest all clubs in the season |
 | `suspensions` | `season_id` |
 | `fixtures_schedule` | exactly one of: `competition_id`; `competition_id` + `season_id`; `competition_id` + `matchday_id` |
-| Match-scoped feeds including `match_information`, `eventdata_match_*`, `event_raw_*`, `distance_match_*`, `speed_interval_*`, `positional_match_*`, `tracking_*`, `video_assist_events`, `player_topspeed_*`, `attacking_zone_entries`, `win_probability_by_minute`, and `advanced_event_*` | `match_id` |
+| Match-scoped feeds including `match_information`, `eventdata_match_*`, `event_raw_*`, `distance_match_*`, `speed_interval_*`, `positional_match_*`, `tracking_*`, `video_assist_events`, `player_topspeed_*`, `attacking_zone_entries`, `win_probability_by_minute`, and `advanced_event_*` | either `match_id`; or `competition_id`, `season_id` to fan out across all fixtures in the season |
 | `eventdata_season_statistics_competition`, `positional_season_statistics_competition`, `xg_rankings_season` | `competition_id`, `season_id` |
-| `eventdata_season_statistics_club`, `positional_season_statistics_club` | `competition_id`, `season_id`, `club_id` |
-| Feed-07 match player rankings | `match_id` |
-| Feed-07 match player team-internal rankings | `match_id`, `team_id` |
-| Feed-07 matchday and season competition/top-50 rankings | `competition_id`, `season_id`, `matchday_id` |
-| Feed-07 season player team-internal rankings | `competition_id`, `season_id`, `matchday_id`, `team_id` |
+| `eventdata_season_statistics_club`, `positional_season_statistics_club` | either `competition_id`, `season_id`, `club_id`; or `competition_id`, `season_id` to ingest all clubs in the season |
+| Feed-07 match player rankings | either `match_id`; or `competition_id`, `season_id` to fan out across all fixtures in the season |
+| Feed-07 match player team-internal rankings | either `match_id`, `team_id`; or `competition_id`, `season_id` to fan out across all fixtures and teams in the season |
+| Feed-07 matchday and season competition/top-50 rankings | either `competition_id`, `season_id`, `matchday_id`; or `competition_id`, `season_id` to fan out across all matchdays in the season |
+| Feed-07 season player team-internal rankings | either `competition_id`, `season_id`, `matchday_id`, `team_id`; or `competition_id`, `season_id` to fan out across all matchdays and teams in the season |
+
+When you provide only `competition_id` + `season_id` for these broader families, the connector expands internally using `fixtures_schedule` and `clubs` to discover child `match_id`, `matchday_id`, `team_id`, and `club_id` values. This is the recommended setup for Databricks UI-driven onboarding when users want to ingest "everything available" for a season.
 
 ### Example Pipeline Configuration
 
@@ -284,6 +301,40 @@ This example shows a mix of base, match-scoped, and ranking tables:
 }
 ```
 
+### Starter Pipeline Specs
+
+For most users, the checked-in pipeline spec templates are easier to use than the inline example above:
+
+- `pipeline-spec/sts/base_metadata.yaml`
+  - Best first run.
+  - Focuses on base data, schedule, and season-level fan-out for core metadata tables.
+- `pipeline-spec/sts/match_analytics.yaml`
+  - Adds advanced events, raw event projections, tracking, and match analytics.
+  - Uses `MLS-MAT-00067J` for standard match-scoped feeds and `MLS-MAT-000532` for raw-event and tracking feeds.
+- `pipeline-spec/sts/recommended_default_mls.yaml`
+  - Conservative default for the MLS tenant used during development.
+  - Uses mostly `competition_id` + `season_id` fan-out instead of explicit match, team, club, and matchday IDs.
+  - Includes only the Feed-06 and Feed-07 families that were observed to return data in validation runs.
+
+When adapting these templates for another tenant, replace:
+
+- `connection_name`
+- `competition_id`
+- `season_id`
+- `matchday_id`
+- `match_id`
+- `club_id`
+- `team_id`
+
+The easiest discovery flow is:
+
+1. Run `competitions`, `seasons`, and `fixtures_schedule`.
+2. Use `fixtures_schedule` to discover a valid `match_id`, `matchday_id`, `home_team_id`, and `guest_team_id`.
+3. Use `clubs` to discover a valid `club_id` for player and team-official tables.
+4. Expand into advanced analytics and Feed-07 rankings only after confirming the prerequisite IDs.
+
+If you want whole-season ingestion rather than one-off exploration, skip steps 2 and 3 for the supported fan-out families and start from `pipeline-spec/sts/recommended_default_mls.yaml`. In that mode, the connector derives child identifiers automatically from the selected `competition_id` + `season_id`.
+
 ## Schema and Data Type Notes
 
 The connector preserves STS XML content with minimal coercion so that downstream consumers can decide how aggressively to normalize metrics.
@@ -323,6 +374,14 @@ The following notes reflect the current authenticated MLS tenant used during con
 - Some STS docs mix MLS and DFL examples. Feed structure is similar across those docs, but actual tenant availability can differ by competition or contract.
 - Some feed attributes described in STS documentation are delivered only after post-match observation windows, often up to about 24 hours after full time.
 
+Current MLS tenant validation also showed that some implemented tables may remain empty even with valid parameters. In particular:
+
+- Feed-07 ranking variants for `ballaction`, `play`, `tackling`, and many `positionaldata` families were empty across multiple sampled fixtures and matchdays.
+- `video_assist_events` was empty across sampled fixtures.
+- Season-level fan-out for match-scoped tables uses `fixtures_schedule` to enumerate candidate matches. For some feeds, individual child requests may still return `404` or zero rows depending on tenant entitlements or feed availability; those unavailable child scopes are skipped during the fan-out pass.
+
+These tables remain supported by the connector, but they are excluded from `pipeline-spec/sts/recommended_default_mls.yaml` because they were not populated for the development tenant at validation time.
+
 ## How To Run
 
 ### Step 1: Add the Connector
@@ -335,7 +394,7 @@ Create the STS Unity Catalog connection with the OAuth and API endpoint values d
 
 ### Step 3: Configure Tables
 
-Choose the STS tables you want to ingest and provide the exact table parameters required for each table family.
+Choose the STS tables you want to ingest and provide the exact table parameters required for each table family. For new deployments, start from one of the checked-in pipeline specs under `pipeline-spec/sts/` rather than building a spec from scratch.
 
 ### Step 4: Run and Schedule
 

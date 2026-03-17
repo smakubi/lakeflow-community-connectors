@@ -635,6 +635,27 @@ FEED0302_TABLES = {
     "event_raw_free_kick_events",
 }
 
+SEASON_SCOPED_CLUB_FANOUT_TABLES = {
+    "players",
+    "team_officials",
+} | SEASON_STATISTICS_CLUB_TABLES
+
+SEASON_SCOPED_MATCH_FANOUT_TABLES = MATCH_ID_TABLES | FEED07_MATCH_ID_TABLES
+
+SEASON_SCOPED_MATCH_TEAM_FANOUT_TABLES = FEED07_MATCH_TEAM_TABLES
+
+SEASON_SCOPED_MATCHDAY_FANOUT_TABLES = FEED07_SEASON_MATCHDAY_TABLES
+
+SEASON_SCOPED_MATCHDAY_TEAM_FANOUT_TABLES = FEED07_TEAM_SCOPED_SEASON_TABLES
+
+SEASON_SCOPED_FANOUT_TABLES = (
+    SEASON_SCOPED_CLUB_FANOUT_TABLES
+    | SEASON_SCOPED_MATCH_FANOUT_TABLES
+    | SEASON_SCOPED_MATCH_TEAM_FANOUT_TABLES
+    | SEASON_SCOPED_MATCHDAY_FANOUT_TABLES
+    | SEASON_SCOPED_MATCHDAY_TEAM_FANOUT_TABLES
+)
+
 
 @dataclass
 class HttpResponse:
@@ -697,17 +718,220 @@ class StsLakeflowConnect(LakeflowConnect):
     ) -> tuple[Iterator[dict], dict]:
         self._validate_table_name(table_name)
         normalized_options = self._validate_table_options(table_name, table_options)
-        snapshot_token = self._build_snapshot_token(table_name, normalized_options)
+        expanded_options = self._expand_table_options(table_name, normalized_options)
+        snapshot_token = self._build_snapshot_token(
+            table_name,
+            {"requested": normalized_options, "expanded": expanded_options},
+        )
 
         if isinstance(start_offset, dict) and start_offset.get("snapshot_token") == snapshot_token:
             return iter(()), dict(start_offset)
 
-        records = self._read_snapshot_table(table_name, normalized_options)
+        records = self._iter_expanded_snapshot_records(
+            table_name,
+            normalized_options,
+            expanded_options,
+        )
         batch_limit = self._max_records_per_batch(normalized_options)
         if batch_limit is not None:
             records = itertools.islice(records, batch_limit)
         end_offset = {"snapshot_token": snapshot_token}
         return iter(records), end_offset
+
+    def _iter_expanded_snapshot_records(
+        self,
+        table_name: str,
+        requested_options: dict[str, str],
+        expanded_options: list[dict[str, str]],
+    ) -> Iterator[dict[str, Any]]:
+        for expanded in expanded_options:
+            try:
+                yield from self._read_snapshot_table(table_name, expanded)
+            except RuntimeError as exc:
+                if self._should_skip_expanded_scope_error(
+                    table_name, requested_options, expanded, exc
+                ):
+                    continue
+                raise
+
+    def _should_skip_expanded_scope_error(
+        self,
+        table_name: str,
+        requested_options: dict[str, str],
+        expanded_options: dict[str, str],
+        exc: RuntimeError,
+    ) -> bool:
+        if requested_options == expanded_options:
+            return False
+        if table_name not in SEASON_SCOPED_FANOUT_TABLES:
+            return False
+        message = str(exc)
+        return " 404 " in message or ": 404 " in message
+
+    def _expand_table_options(
+        self, table_name: str, table_options: dict[str, str]
+    ) -> list[dict[str, str]]:
+        if not self._is_season_scope_fanout_request(table_name, table_options):
+            return [table_options]
+
+        competition_id = table_options["competition_id"]
+        season_id = table_options["season_id"]
+
+        if table_name in SEASON_SCOPED_CLUB_FANOUT_TABLES:
+            return [
+                {
+                    "competition_id": competition_id,
+                    "season_id": season_id,
+                    "club_id": club_id,
+                }
+                for club_id in self._season_club_ids(competition_id, season_id)
+            ]
+
+        fixtures = self._season_fixtures(competition_id, season_id)
+
+        if table_name in SEASON_SCOPED_MATCH_FANOUT_TABLES:
+            return [
+                {
+                    "competition_id": competition_id,
+                    "season_id": season_id,
+                    "match_id": match_id,
+                }
+                for match_id in self._fixture_match_ids(fixtures)
+            ]
+
+        if table_name in SEASON_SCOPED_MATCH_TEAM_FANOUT_TABLES:
+            return [
+                {
+                    "competition_id": competition_id,
+                    "season_id": season_id,
+                    "match_id": match_id,
+                    "team_id": team_id,
+                }
+                for match_id, team_id in self._fixture_match_team_ids(fixtures)
+            ]
+
+        if table_name in SEASON_SCOPED_MATCHDAY_FANOUT_TABLES:
+            return [
+                {
+                    "competition_id": competition_id,
+                    "season_id": season_id,
+                    "matchday_id": matchday_id,
+                }
+                for matchday_id in self._fixture_matchday_ids(fixtures)
+            ]
+
+        if table_name in SEASON_SCOPED_MATCHDAY_TEAM_FANOUT_TABLES:
+            return [
+                {
+                    "competition_id": competition_id,
+                    "season_id": season_id,
+                    "matchday_id": matchday_id,
+                    "team_id": team_id,
+                }
+                for matchday_id, team_id in self._fixture_matchday_team_ids(fixtures)
+            ]
+
+        return [table_options]
+
+    def _is_season_scope_fanout_request(
+        self, table_name: str, table_options: dict[str, str]
+    ) -> bool:
+        return (
+            table_name in SEASON_SCOPED_FANOUT_TABLES
+            and "competition_id" in table_options
+            and "season_id" in table_options
+            and "match_id" not in table_options
+            and "club_id" not in table_options
+            and "matchday_id" not in table_options
+            and "team_id" not in table_options
+        )
+
+    def _season_fixtures(
+        self, competition_id: str, season_id: str
+    ) -> list[dict[str, Any]]:
+        return list(
+            self._read_snapshot_table(
+                "fixtures_schedule",
+                {
+                    "competition_id": competition_id,
+                    "season_id": season_id,
+                },
+            )
+        )
+
+    def _season_club_ids(self, competition_id: str, season_id: str) -> list[str]:
+        club_records = self._read_snapshot_table(
+            "clubs",
+            {
+                "competition_id": competition_id,
+                "season_id": season_id,
+            },
+        )
+        seen: set[str] = set()
+        club_ids: list[str] = []
+        for record in club_records:
+            club_id = record.get("club_id")
+            if not club_id or club_id in seen:
+                continue
+            seen.add(club_id)
+            club_ids.append(str(club_id))
+        return club_ids
+
+    def _fixture_match_ids(self, fixtures: Iterable[dict[str, Any]]) -> list[str]:
+        seen: set[str] = set()
+        match_ids: list[str] = []
+        for fixture in fixtures:
+            match_id = fixture.get("match_id")
+            if not match_id or match_id in seen:
+                continue
+            seen.add(match_id)
+            match_ids.append(str(match_id))
+        return match_ids
+
+    def _fixture_matchday_ids(self, fixtures: Iterable[dict[str, Any]]) -> list[str]:
+        seen: set[str] = set()
+        matchday_ids: list[str] = []
+        for fixture in fixtures:
+            matchday_id = fixture.get("matchday_id")
+            if not matchday_id or matchday_id in seen:
+                continue
+            seen.add(matchday_id)
+            matchday_ids.append(str(matchday_id))
+        return matchday_ids
+
+    def _fixture_match_team_ids(
+        self, fixtures: Iterable[dict[str, Any]]
+    ) -> list[tuple[str, str]]:
+        seen: set[tuple[str, str]] = set()
+        pairs: list[tuple[str, str]] = []
+        for fixture in fixtures:
+            match_id = fixture.get("match_id")
+            for team_id in (fixture.get("home_team_id"), fixture.get("guest_team_id")):
+                if not match_id or not team_id:
+                    continue
+                pair = (str(match_id), str(team_id))
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                pairs.append(pair)
+        return pairs
+
+    def _fixture_matchday_team_ids(
+        self, fixtures: Iterable[dict[str, Any]]
+    ) -> list[tuple[str, str]]:
+        seen: set[tuple[str, str]] = set()
+        pairs: list[tuple[str, str]] = []
+        for fixture in fixtures:
+            matchday_id = fixture.get("matchday_id")
+            for team_id in (fixture.get("home_team_id"), fixture.get("guest_team_id")):
+                if not matchday_id or not team_id:
+                    continue
+                pair = (str(matchday_id), str(team_id))
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                pairs.append(pair)
+        return pairs
 
     def _read_snapshot_table(
         self, table_name: str, table_options: dict[str, str]
@@ -991,60 +1215,67 @@ class StsLakeflowConnect(LakeflowConnect):
             "matchdays": {"competition_id"},
             "stadiums": set(),
             "clubs": {"season_id", "competition_id"},
-            "players": {"club_id", "season_id"},
-            "team_officials": {"club_id", "season_id"},
+            "players": {"club_id", "season_id", "competition_id"},
+            "team_officials": {"club_id", "season_id", "competition_id"},
             "referees": set(),
             "suspensions": {"season_id"},
             "fixtures_schedule": {"competition_id", "season_id", "matchday_id"},
             "seasons": {"competition_id"},
-            "match_information": {"match_id"},
-            "eventdata_match_statistics_match": {"match_id"},
-            "eventdata_match_statistics_intervals": {"match_id"},
-            "eventdata_match_statistics_periods": {"match_id"},
-            "eventdata_match_basic": {"match_id"},
-            "eventdata_match_basic_extended": {"match_id"},
+            "match_information": {"match_id", "competition_id", "season_id"},
+            "eventdata_match_statistics_match": {"match_id", "competition_id", "season_id"},
+            "eventdata_match_statistics_intervals": {"match_id", "competition_id", "season_id"},
+            "eventdata_match_statistics_periods": {"match_id", "competition_id", "season_id"},
+            "eventdata_match_basic": {"match_id", "competition_id", "season_id"},
+            "eventdata_match_basic_extended": {"match_id", "competition_id", "season_id"},
             "season_tables": {"competition_id"},
             "eventdata_season_statistics_competition": {"competition_id", "season_id"},
             "eventdata_season_statistics_club": {"competition_id", "season_id", "club_id"},
             "positional_season_statistics_competition": {"competition_id", "season_id"},
             "positional_season_statistics_club": {"competition_id", "season_id", "club_id"},
-            "event_raw_messages": {"match_id"},
-            "event_raw_delete_events": {"match_id"},
-            "event_raw_var_notifications": {"match_id"},
-            "event_raw_play_events": {"match_id"},
-            "event_raw_foul_events": {"match_id"},
-            "event_raw_shot_at_goal_events": {"match_id"},
-            "event_raw_substitution_events": {"match_id"},
-            "event_raw_caution_events": {"match_id"},
-            "event_raw_offside_events": {"match_id"},
-            "event_raw_corner_kick_events": {"match_id"},
-            "event_raw_free_kick_events": {"match_id"},
-            "distance_match_teams": {"match_id"},
-            "distance_match_players": {"match_id"},
-            "speed_interval_definitions": {"match_id"},
-            "speed_interval_player_stats": {"match_id"},
-            "positional_match_team_statistics": {"match_id"},
-            "positional_match_player_statistics": {"match_id"},
-            "video_assist_events": {"match_id"},
-            "player_topspeed_alerts": {"match_id"},
-            "player_topspeed_alert_rankings": {"match_id"},
-            "attacking_zone_entries": {"match_id"},
+            "event_raw_messages": {"match_id", "competition_id", "season_id"},
+            "event_raw_delete_events": {"match_id", "competition_id", "season_id"},
+            "event_raw_var_notifications": {"match_id", "competition_id", "season_id"},
+            "event_raw_play_events": {"match_id", "competition_id", "season_id"},
+            "event_raw_foul_events": {"match_id", "competition_id", "season_id"},
+            "event_raw_shot_at_goal_events": {"match_id", "competition_id", "season_id"},
+            "event_raw_substitution_events": {"match_id", "competition_id", "season_id"},
+            "event_raw_caution_events": {"match_id", "competition_id", "season_id"},
+            "event_raw_offside_events": {"match_id", "competition_id", "season_id"},
+            "event_raw_corner_kick_events": {"match_id", "competition_id", "season_id"},
+            "event_raw_free_kick_events": {"match_id", "competition_id", "season_id"},
+            "distance_match_teams": {"match_id", "competition_id", "season_id"},
+            "distance_match_players": {"match_id", "competition_id", "season_id"},
+            "speed_interval_definitions": {"match_id", "competition_id", "season_id"},
+            "speed_interval_player_stats": {"match_id", "competition_id", "season_id"},
+            "positional_match_team_statistics": {"match_id", "competition_id", "season_id"},
+            "positional_match_player_statistics": {"match_id", "competition_id", "season_id"},
+            "video_assist_events": {"match_id", "competition_id", "season_id"},
+            "player_topspeed_alerts": {"match_id", "competition_id", "season_id"},
+            "player_topspeed_alert_rankings": {"match_id", "competition_id", "season_id"},
+            "attacking_zone_entries": {"match_id", "competition_id", "season_id"},
             "xg_rankings_season": {"competition_id", "season_id"},
-            "win_probability_by_minute": {"match_id"},
-            "advanced_events_raw": {"match_id"},
-            "advanced_event_plays": {"match_id"},
-            "advanced_event_receptions": {"match_id"},
-            "advanced_event_carries": {"match_id"},
-            "advanced_event_team_possessions": {"match_id"},
-            "advanced_event_other_ball_actions": {"match_id"},
-            "advanced_event_tackling_games": {"match_id"},
-            "advanced_event_fouls": {"match_id"},
-            "advanced_event_shots_at_goal": {"match_id"},
-            "tracking_pitch_metadata": {"match_id"},
-            "tracking_postmatch_framesets": {"match_id"},
+            "win_probability_by_minute": {"match_id", "competition_id", "season_id"},
+            "advanced_events_raw": {"match_id", "competition_id", "season_id"},
+            "advanced_event_plays": {"match_id", "competition_id", "season_id"},
+            "advanced_event_receptions": {"match_id", "competition_id", "season_id"},
+            "advanced_event_carries": {"match_id", "competition_id", "season_id"},
+            "advanced_event_team_possessions": {"match_id", "competition_id", "season_id"},
+            "advanced_event_other_ball_actions": {"match_id", "competition_id", "season_id"},
+            "advanced_event_tackling_games": {"match_id", "competition_id", "season_id"},
+            "advanced_event_fouls": {"match_id", "competition_id", "season_id"},
+            "advanced_event_shots_at_goal": {"match_id", "competition_id", "season_id"},
+            "tracking_pitch_metadata": {"match_id", "competition_id", "season_id"},
+            "tracking_postmatch_framesets": {"match_id", "competition_id", "season_id"},
         }
-        allowed_by_table.update({table: {"match_id"} for table in FEED07_MATCH_ID_TABLES})
-        allowed_by_table.update({table: {"match_id", "team_id"} for table in FEED07_MATCH_TEAM_TABLES})
+        allowed_by_table.update(
+            {table: {"match_id", "competition_id", "season_id"} for table in FEED07_MATCH_ID_TABLES}
+        )
+        allowed_by_table.update(
+            {
+                table: {"match_id", "team_id", "competition_id", "season_id"}
+                for table in FEED07_MATCH_TEAM_TABLES
+            }
+        )
         allowed_by_table.update(
             {
                 table: {"competition_id", "season_id", "matchday_id"}
@@ -1090,49 +1321,60 @@ class StsLakeflowConnect(LakeflowConnect):
                 "Table 'clubs' requires both table_options['season_id'] and "
                 "table_options['competition_id']"
             )
-        if table_name in {"players", "team_officials"} and set(effective_options) != {
-            "club_id",
-            "season_id",
-        }:
+        if table_name in {"players", "team_officials"} and set(effective_options) not in (
+            {"club_id", "season_id"},
+            {"competition_id", "season_id"},
+        ):
             raise ValueError(
-                f"Table '{table_name}' requires both table_options['club_id'] and "
+                f"Table '{table_name}' requires either table_options['club_id'] + "
+                "table_options['season_id'] or table_options['competition_id'] + "
                 "table_options['season_id']"
             )
         if table_name == "suspensions" and "season_id" not in effective_options:
             raise ValueError("Table 'suspensions' requires table_options['season_id']")
         if table_name == "seasons" and "competition_id" not in effective_options:
             raise ValueError("Table 'seasons' requires table_options['competition_id']")
-        if table_name in MATCH_ID_TABLES and "match_id" not in effective_options:
-            raise ValueError(f"Table '{table_name}' requires table_options['match_id']")
-        if table_name in FEED07_MATCH_ID_TABLES and "match_id" not in effective_options:
-            raise ValueError(f"Table '{table_name}' requires table_options['match_id']")
-        if table_name in FEED07_MATCH_TEAM_TABLES and set(effective_options) != {
-            "match_id",
-            "team_id",
-        }:
+        if table_name in MATCH_ID_TABLES and set(effective_options) not in (
+            {"match_id"},
+            {"competition_id", "season_id"},
+        ):
             raise ValueError(
-                f"Table '{table_name}' requires table_options['match_id'] and "
-                "table_options['team_id']"
+                f"Table '{table_name}' requires either table_options['match_id'] or "
+                "table_options['competition_id'] + table_options['season_id']"
             )
-        if table_name in FEED07_SEASON_MATCHDAY_TABLES and set(effective_options) != {
-            "competition_id",
-            "season_id",
-            "matchday_id",
-        }:
+        if table_name in FEED07_MATCH_ID_TABLES and set(effective_options) not in (
+            {"match_id"},
+            {"competition_id", "season_id"},
+        ):
             raise ValueError(
-                f"Table '{table_name}' requires table_options['competition_id'], "
-                "table_options['season_id'], and table_options['matchday_id']"
+                f"Table '{table_name}' requires either table_options['match_id'] or "
+                "table_options['competition_id'] + table_options['season_id']"
             )
-        if table_name in FEED07_TEAM_SCOPED_SEASON_TABLES and set(effective_options) != {
-            "competition_id",
-            "season_id",
-            "matchday_id",
-            "team_id",
-        }:
+        if table_name in FEED07_MATCH_TEAM_TABLES and set(effective_options) not in (
+            {"match_id", "team_id"},
+            {"competition_id", "season_id"},
+        ):
             raise ValueError(
-                f"Table '{table_name}' requires table_options['competition_id'], "
-                "table_options['season_id'], table_options['matchday_id'], and "
-                "table_options['team_id']"
+                f"Table '{table_name}' requires table_options['match_id'] + "
+                "table_options['team_id'] or table_options['competition_id'] + "
+                "table_options['season_id']"
+            )
+        if table_name in FEED07_SEASON_MATCHDAY_TABLES and set(effective_options) not in (
+            {"competition_id", "season_id", "matchday_id"},
+            {"competition_id", "season_id"},
+        ):
+            raise ValueError(
+                f"Table '{table_name}' requires table_options['competition_id'] + "
+                "table_options['season_id'] with optional table_options['matchday_id']"
+            )
+        if table_name in FEED07_TEAM_SCOPED_SEASON_TABLES and set(effective_options) not in (
+            {"competition_id", "season_id", "matchday_id", "team_id"},
+            {"competition_id", "season_id"},
+        ):
+            raise ValueError(
+                f"Table '{table_name}' requires table_options['competition_id'] + "
+                "table_options['season_id'] with optional table_options['matchday_id'] "
+                "and table_options['team_id']"
             )
         if table_name == "season_tables" and "competition_id" not in effective_options:
             raise ValueError("Table 'season_tables' requires table_options['competition_id']")
@@ -1144,14 +1386,13 @@ class StsLakeflowConnect(LakeflowConnect):
                 f"Table '{table_name}' requires both table_options['competition_id'] and "
                 "table_options['season_id']"
             )
-        if table_name in SEASON_STATISTICS_CLUB_TABLES and set(effective_options) != {
-            "competition_id",
-            "season_id",
-            "club_id",
-        }:
+        if table_name in SEASON_STATISTICS_CLUB_TABLES and set(effective_options) not in (
+            {"competition_id", "season_id", "club_id"},
+            {"competition_id", "season_id"},
+        ):
             raise ValueError(
-                f"Table '{table_name}' requires table_options['competition_id'], "
-                "table_options['season_id'], and table_options['club_id']"
+                f"Table '{table_name}' requires table_options['competition_id'] + "
+                "table_options['season_id'] with optional table_options['club_id']"
             )
 
         if table_name == "fixtures_schedule":

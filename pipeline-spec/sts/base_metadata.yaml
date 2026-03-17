@@ -1,0 +1,41 @@
+connection_name: sts_connection
+objects:
+  - table:
+      source_table: competitions
+  - table:
+      source_table: seasons
+      table_configuration:
+        competition_id: MLS-COM-000001
+  - table:
+      source_table: matchdays
+      table_configuration:
+        competition_id: MLS-COM-000001
+  - table:
+      source_table: fixtures_schedule
+      table_configuration:
+        competition_id: MLS-COM-000001
+        season_id: MLS-SEA-0001JG
+  - table:
+      source_table: clubs
+      table_configuration:
+        competition_id: MLS-COM-000001
+        season_id: MLS-SEA-0001JG
+  - table:
+      source_table: players
+      table_configuration:
+        competition_id: MLS-COM-000001
+        season_id: MLS-SEA-0001JG
+  - table:
+      source_table: team_officials
+      table_configuration:
+        competition_id: MLS-COM-000001
+        season_id: MLS-SEA-0001JG
+  - table:
+      source_table: referees
+  - table:
+      source_table: stadiums
+  - table:
+      source_table: match_information
+      table_configuration:
+        competition_id: MLS-COM-000001
+        season_id: MLS-SEA-0001JG
