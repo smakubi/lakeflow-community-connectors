@@ -498,6 +498,7 @@ def deduplicate_imports(import_lists: List[List[str]]) -> List[str]:
         return get_base_module(module_name) in stdlib_modules
 
     # Build the final import list
+    future_imports = []
     stdlib_from_imports = []
     thirdparty_from_imports = []
     stdlib_simple_imports = []
@@ -524,14 +525,18 @@ def deduplicate_imports(import_lists: List[List[str]]) -> List[str]:
                 + ",\n)"
             )
 
-        if is_stdlib(module):
+        if module == "__future__":
+            future_imports.append(import_stmt)
+        elif is_stdlib(module):
             stdlib_from_imports.append(import_stmt)
         else:
             thirdparty_from_imports.append(import_stmt)
 
     # Add wildcard imports
     for module in sorted(wildcard_imports.keys()):
-        if is_stdlib(module):
+        if module == "__future__":
+            future_imports.append(wildcard_imports[module])
+        elif is_stdlib(module):
             stdlib_from_imports.append(wildcard_imports[module])
         else:
             thirdparty_from_imports.append(wildcard_imports[module])
@@ -546,6 +551,11 @@ def deduplicate_imports(import_lists: List[List[str]]) -> List[str]:
 
     # Combine all imports in the correct order
     result = []
+
+    if future_imports:
+        result.extend(sorted(set(future_imports)))
+        if stdlib_from_imports or stdlib_simple_imports or thirdparty_from_imports or thirdparty_simple_imports:
+            result.append("")
 
     # Standard library imports
     if stdlib_from_imports or stdlib_simple_imports:
