@@ -14,7 +14,7 @@ import dataclasses
 import json
 import re
 import traceback
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional, List, Set
 
 import click
@@ -1154,6 +1154,37 @@ def _upload_packages_for_update(
     click.echo("  ✓ Pipeline dependencies updated")
 
 
+def _upload_local_source_for_update(workspace_client, pipeline_info, debug: bool) -> None:
+    """Upload filtered local source files for an existing pipeline update."""
+    ingest_path = _get_ingest_path_from_pipeline(pipeline_info)
+    if not ingest_path:
+        raise click.ClickException(
+            "Could not determine ingest.py path from pipeline configuration. "
+            "Please ensure the pipeline was created with community-connector CLI."
+        )
+
+    click.echo("\nReading existing ingest.py to resolve local source upload target...")
+    existing_content = _read_workspace_file(workspace_client, ingest_path)
+    source_name = _extract_source_name_from_ingest(existing_content)
+    if not source_name:
+        raise click.ClickException(
+            "Could not extract source_name from existing ingest.py. "
+            "Please ensure the file was created with community-connector CLI."
+        )
+
+    ingest_posix_path = PurePosixPath(ingest_path)
+    if ingest_posix_path.name != "ingest.py" or ingest_posix_path.parent.name != "src":
+        raise click.ClickException(
+            f"Unexpected ingest.py location: {ingest_path}. "
+            "Expected .../<workspace_path>/src/ingest.py"
+        )
+
+    workspace_path = str(ingest_posix_path.parent.parent)
+    click.echo(f"  ✓ Detected source: {source_name}")
+    click.echo(f"  ✓ Resolved workspace path: {workspace_path}")
+    _upload_source_files(workspace_client, source_name, workspace_path, debug)
+
+
 @main.command("update_pipeline")
 @click.argument("pipeline_name")
 @click.option(
@@ -1173,12 +1204,22 @@ def _upload_packages_for_update(
     help="Path to a local connector python wheel package. Can be specified multiple times. "
     "If provided, packages are uploaded and the pipeline is updated to use them.",
 )
+@click.option(
+    "--use-local-source",
+    "-u",
+    "use_local_source",
+    is_flag=True,
+    default=False,
+    help="Upload filtered local source files (*.py, README.md, connector_spec.yaml) "
+    "for the pipeline's detected connector source before finishing the update.",
+)
 @click.pass_context
 def update_pipeline(
     ctx: click.Context,
     pipeline_name: str,
     pipeline_spec_input: Optional[str],
     package_paths: tuple,
+    use_local_source: bool,
 ):
     """
     Update an existing community connector pipeline.
@@ -1187,9 +1228,11 @@ def update_pipeline(
 
     When --pipeline-spec is provided, the ingest.py file is updated with the
     new spec. When --package is provided, packages are uploaded and the pipeline
-    dependencies are updated. Both can be used together or independently.
+    dependencies are updated. When --use-local-source is provided, filtered
+    local source files are uploaded for the connector source used by the
+    pipeline. These options can be used together or independently.
 
-    At least one of --pipeline-spec or --package must be provided.
+    At least one of --pipeline-spec, --package, or --use-local-source must be provided.
 
     \b
     Example:
@@ -1197,12 +1240,13 @@ def update_pipeline(
         community-connector update_pipeline my_pipeline -p connector.whl
         community-connector update_pipeline my_pipeline -p a.whl -p b.whl
         community-connector update_pipeline my_pipeline -ps spec.yaml -p pkg.whl
+        community-connector update_pipeline my_pipeline --use-local-source
     """
     debug = ctx.obj.get("debug", False)
 
-    if not pipeline_spec_input and not package_paths:
+    if not pipeline_spec_input and not package_paths and not use_local_source:
         raise click.ClickException(
-            "At least one of --pipeline-spec or --package must be provided"
+            "At least one of --pipeline-spec, --package, or --use-local-source must be provided"
         )
 
     workspace_client = WorkspaceClient()
@@ -1226,6 +1270,9 @@ def update_pipeline(
             _upload_packages_for_update(
                 workspace_client, pipeline_id, pipeline_info, package_paths, debug,
             )
+
+        if use_local_source:
+            _upload_local_source_for_update(workspace_client, pipeline_info, debug)
 
         _print_pipeline_success(workspace_client, pipeline_id)
 
