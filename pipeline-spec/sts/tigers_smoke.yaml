@@ -1,0 +1,33 @@
+# STS smoke-run spec for the FEVM Tigers workspace (tigers-pia-fevm).
+# Lightweight base + analytics ingestion for 2-3 matches into
+# tigers_pia_catalog.sts_data. Run via the register()+inline-options
+# notebook (ingest_sts.py), NOT the SDP ingest() path:
+# the GENERIC_LAKEFLOW_CONNECT connection type / SDP pipeline are not
+# used here — creds are passed as inline reader options from secret
+# scope `sts_mls`.
+#
+# competition: MLS-COM-000001   season: MLS-SEA-0001KA
+# matches: discovered from fixtures_schedule at runtime, falling back to
+#          MLS-MAT-00067J and MLS-MAT-0009D7 (known-good samples).
+
+connection: inline-options (secret scope sts_mls)
+destination_catalog: tigers_pia_catalog
+destination_schema: sts_data
+
+base_objects:
+  - source_table: competitions          # no params
+  - source_table: seasons               # competition_id
+  - source_table: fixtures_schedule     # competition_id + season_id
+  - source_table: clubs                 # competition_id + season_id
+
+per_match_objects:                       # match_id only
+  - source_table: match_information
+  - source_table: advanced_event_plays
+  - source_table: advanced_event_shots_at_goal
+
+scope:
+  competition_id: MLS-COM-000001
+  season_id: MLS-SEA-0001KA
+  match_ids_fallback:
+    - MLS-MAT-00067J
+    - MLS-MAT-0009D7

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import itertools
 import json
 import time
@@ -47,7 +48,7 @@ from databricks.labs.community_connector.sources.sts.sts_schemas import (
     camel_to_snake,
 )
 
-REQUEST_TIMEOUT_SECONDS = 30
+REQUEST_TIMEOUT_SECONDS = 300  # large positional-tracking responses (~300MB) need a long read window
 MAX_RETRIES = 3
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 TOKEN_REFRESH_SKEW_SECONDS = 60
@@ -752,6 +753,12 @@ class StsLakeflowConnect(LakeflowConnect):
                     table_name, requested_options, expanded, exc
                 ):
                     continue
+                message = str(exc)
+                if " 404 " in message or ": 404 " in message:
+                    # Feed/scope not available for this tenant -> treat as empty
+                    # rather than fatal, so a full "ingest everything" run skips
+                    # unavailable feeds instead of failing the whole pipeline.
+                    continue
                 raise
 
     def _should_skip_expanded_scope_error(
@@ -1035,7 +1042,18 @@ class StsLakeflowConnect(LakeflowConnect):
                 self._ensure_access_token(force_refresh=True)
                 force_token_refresh = False
 
-            response = self._http_request(method, url)
+            try:
+                response = self._http_request(method, url)
+            except (urllib.error.URLError, http.client.HTTPException, OSError) as exc:
+                # transient network failure (e.g. IncompleteRead/timeout on a huge
+                # tracking download) -> retry rather than crash the whole read.
+                if attempt == MAX_RETRIES:
+                    raise RuntimeError(
+                        f"STS request failed after {MAX_RETRIES} retries for '{url}': "
+                        f"{type(exc).__name__}: {exc}"
+                    ) from exc
+                time.sleep(2 ** (attempt + 1))
+                continue
             if response.status_code == 401 and attempt < MAX_RETRIES:
                 force_token_refresh = True
                 continue

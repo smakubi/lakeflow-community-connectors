@@ -1753,7 +1753,7 @@ TABLE_METADATA: dict[str, dict[str, object]] = {
         "ingestion_type": "snapshot",
     },
     "clubs": {
-        "primary_keys": ["club_id", "season_id"],
+        "primary_keys": ["club_id", "season_id", "valid_to"],
         "cursor_field": None,
         "ingestion_type": "snapshot",
     },
